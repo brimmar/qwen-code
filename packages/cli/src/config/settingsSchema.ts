@@ -1114,6 +1114,51 @@ const SETTINGS_SCHEMA = {
     },
   },
 
+  events: {
+    type: 'array',
+    label: 'Event Hooks',
+    category: 'Advanced',
+    requiresRestart: false,
+    default: [] as Array<{
+      on: string | string[];
+      spawn: string | string[];
+      description?: string;
+    }>,
+    description:
+      'Event hooks that execute custom commands when specific events occur',
+    showInDialog: false,
+    properties: {
+      on: {
+        type: 'string',
+        label: 'Event Trigger',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: '',
+        description:
+          'The event that triggers this hook (e.g., idle, responding, confirm, afterAgent, beforeTool, afterTool, sessionStart, sessionEnd)',
+        showInDialog: false,
+      },
+      spawn: {
+        type: 'string',
+        label: 'Command to Execute',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: '',
+        description: 'The command to execute when the event is triggered',
+        showInDialog: false,
+      },
+      description: {
+        type: 'string',
+        label: 'Description',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: undefined as string | undefined,
+        description: 'Optional description of the event hook',
+        showInDialog: false,
+      },
+    },
+  },
+
   extensions: {
     type: 'object',
     label: 'Extensions',

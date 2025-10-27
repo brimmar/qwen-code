@@ -300,6 +300,23 @@ Settings are organized into categories. All settings should be placed within the
   - **Description:** API key for Tavily web search service. Required to enable the `web_search` tool functionality. If not configured, the web search tool will be disabled and skipped.
   - **Default:** `undefined`
 
+#### `events`
+
+Configures event hooks that execute custom commands when specific events occur during a Qwen Code session. This feature enables automation and integration with external tools at key points in the Qwen Code workflow.
+
+- **`events`** (array of objects): An array of event hook configurations.
+  - `on` (string or array of strings): The event trigger(s) that will execute this hook. Valid values are:
+    - `idle`: When Qwen Code is not actively responding
+    - `confirm`: When waiting for user confirmation
+    - `responding`: When Qwen Code is actively generating a response
+    - `afterAgent`: After the agent has completed its response
+    - `beforeTool`: Before a tool is executed
+    - `afterTool`: After a tool has been executed
+    - `sessionStart`: When a new session begins
+    - `sessionEnd`: When a session ends
+  - `spawn` (string or array of strings): The command to execute when the event is triggered. Can be a single command string or an array of command and arguments.
+  - `description` (string, optional): An optional description of the event hook.
+
 #### `mcpServers`
 
 Configures connections to one or more Model-Context Protocol (MCP) servers for discovering and using custom tools. Qwen Code attempts to connect to each configured MCP server to discover available tools. If multiple MCP servers expose a tool with the same name, the tool names will be prefixed with the server alias you defined in the configuration (e.g., `serverAlias__actualToolName`) to avoid conflicts. Note that the system might strip certain schema properties from MCP tool definitions for compatibility. At least one of `command`, `url`, or `httpUrl` must be provided. If multiple are specified, the order of precedence is `httpUrl`, then `url`, then `command`.
@@ -392,11 +409,49 @@ Here is an example of a `settings.json` file with the nested structure, new as o
       "respectGitIgnore": false
     }
   },
+  "events": [
+    {
+      "on": ["confirm", "idle"],
+      "spawn": ["echo", "-e", "User input is needed! \\a"]
+    },
+    {
+      "on": "responding",
+      "spawn": "echo 'Qwen Code is thinking...'"
+    },
+    {
+      "on": "sessionStart",
+      "spawn": "echo 'Session started at $(date)' > /tmp/qwen-session.log"
+    },
+    {
+      "on": "beforeTool",
+      "spawn": "echo 'A tool is about to be executed' >> /tmp/qwen-session.log"
+    },
+    {
+      "on": "afterTool",
+      "spawn": "echo 'A tool has been executed' >> /tmp/qwen-session.log"
+    }
+  ],
   "advanced": {
     "excludedEnvVars": ["DEBUG", "DEBUG_MODE", "NODE_ENV"]
   }
 }
 ```
+
+### Event Hooks Configuration
+
+The `events` section allows you to define custom commands that will be executed when specific events occur during a Qwen Code session. Each event hook configuration includes:
+
+- `on`: Specifies when the hook should be triggered. This can be a single event or an array of events.
+- `spawn`: The command to execute, which can be a single string or an array of command and arguments.
+- `description`: (Optional) A description of what the event hook does.
+
+#### Common Use Cases
+
+- **System Notifications**: Get audible or visual alerts when Qwen Code needs attention
+- **Automation**: Trigger external scripts or tools based on Qwen Code's state
+- **Integration**: Connect Qwen Code with other tools in your workflow
+- **Monitoring**: Log or track when certain events occur during Qwen Code sessions
+- **Custom Workflows**: Execute custom scripts that enhance your interaction with Qwen Code
 
 ## Shell History
 

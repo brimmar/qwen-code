@@ -65,6 +65,10 @@ import path from 'node:path';
 import { useSessionStats } from '../contexts/SessionContext.js';
 import { useKeypress } from './useKeypress.js';
 import type { LoadedSettings } from '../../config/settings.js';
+import {
+  EventHookService,
+  type EventTrigger,
+} from '../../services/eventHookService.js';
 
 enum StreamProcessingStatus {
   Completed,
@@ -134,7 +138,40 @@ export const useGeminiStream = (
     return new GitService(config.getProjectRoot(), storage);
   }, [config, storage]);
 
-  const [toolCalls, scheduleToolCalls, markToolsAsSubmitted] =
+  // Initialize and manage event hook service
+  const eventHookServiceRef = useRef<EventHookService | null>(null);
+
+  // Track previous streaming state to detect changes
+  const prevStreamingStateRef = useRef<StreamingState>(StreamingState.Idle);
+
+  useEffect(() => {
+    // Initialize event hook service with project root directory
+    const projectRoot = config.getProjectRoot() || process.cwd();
+    eventHookServiceRef.current = new EventHookService(projectRoot);
+
+    // Register event hooks from settings if available
+    const eventsConfig = settings.merged?.events;
+    if (eventsConfig && Array.isArray(eventsConfig)) {
+      eventHookServiceRef.current.registerHooks(eventsConfig);
+    }
+
+    // Trigger session start event
+    eventHookServiceRef.current.triggerEvent('sessionStart');
+
+    // Cleanup on unmount
+    return () => {
+      if (eventHookServiceRef.current) {
+        // Trigger session end event
+        eventHookServiceRef.current.triggerEvent('sessionEnd');
+        // Clean up all processes
+        eventHookServiceRef.current.cleanupAll();
+        eventHookServiceRef.current = null;
+      }
+    };
+  }, [config, settings]);
+
+  // Initialize the original tool scheduler
+  const [toolCalls, originalScheduleToolCalls, markToolsAsSubmitted] =
     useReactToolScheduler(
       async (completedToolCallsFromScheduler) => {
         // This onComplete is called when ALL scheduled tools for a given batch are done.
@@ -157,6 +194,158 @@ export const useGeminiStream = (
       getPreferredEditor,
       onEditorClose,
     );
+
+  // Enhanced scheduleToolCalls that triggers beforeTool events
+  const scheduleToolCalls = useCallback(
+    (
+      request: ToolCallRequestInfo | ToolCallRequestInfo[],
+      signal: AbortSignal,
+    ) => {
+      // Trigger beforeTool event for each tool being scheduled
+      const requests = Array.isArray(request) ? request : [request];
+      for (const _req of requests) {
+        if (eventHookServiceRef.current) {
+          eventHookServiceRef.current.triggerEvent('beforeTool');
+        }
+      }
+
+      // Call the original scheduler
+      originalScheduleToolCalls(request, signal);
+    },
+    [originalScheduleToolCalls],
+  );
+
+  // Enhanced handleCompletedTools that triggers afterTool events
+  const handleCompletedTools = useCallback(
+    async (completedToolCallsFromScheduler: TrackedToolCall[]) => {
+      if (isResponding) {
+        return;
+      }
+
+      const completedAndReadyToSubmitTools =
+        completedToolCallsFromScheduler.filter(
+          (
+            tc: TrackedToolCall,
+          ): tc is TrackedCompletedToolCall | TrackedCancelledToolCall => {
+            const isTerminalState =
+              tc.status === 'success' ||
+              tc.status === 'error' ||
+              tc.status === 'cancelled';
+
+            if (isTerminalState) {
+              const completedOrCancelledCall = tc as
+                | TrackedCompletedToolCall
+                | TrackedCancelledToolCall;
+              return (
+                completedOrCancelledCall.response?.responseParts !== undefined
+              );
+            }
+            return false;
+          },
+        );
+
+      // Trigger afterTool events for completed tools
+      if (
+        completedAndReadyToSubmitTools.length > 0 &&
+        eventHookServiceRef.current
+      ) {
+        eventHookServiceRef.current.triggerEvent('afterTool');
+      }
+
+      // Finalize any client-initiated tools as soon as they are done.
+      const clientTools = completedAndReadyToSubmitTools.filter(
+        (t) => t.request.isClientInitiated,
+      );
+      if (clientTools.length > 0) {
+        markToolsAsSubmitted(clientTools.map((t) => t.request.callId));
+      }
+
+      // Identify new, successful save_memory calls that we haven't processed yet.
+      const newSuccessfulMemorySaves = completedAndReadyToSubmitTools.filter(
+        (t) =>
+          t.request.name === 'save_memory' &&
+          t.status === 'success' &&
+          !processedMemoryToolsRef.current.has(t.request.callId),
+      );
+
+      if (newSuccessfulMemorySaves.length > 0) {
+        // Perform the refresh only if there are new ones.
+        void performMemoryRefresh();
+        // Mark them as processed so we don't do this again on the next render.
+        newSuccessfulMemorySaves.forEach((t) =>
+          processedMemoryToolsRef.current.add(t.request.callId),
+        );
+      }
+
+      const geminiTools = completedAndReadyToSubmitTools.filter(
+        (t) => !t.request.isClientInitiated,
+      );
+
+      if (geminiTools.length === 0) {
+        return;
+      }
+
+      // If all the tools were cancelled, don't submit a response to Gemini.
+      const allToolsCancelled = geminiTools.every(
+        (tc) => tc.status === 'cancelled',
+      );
+
+      if (allToolsCancelled) {
+        if (geminiClient) {
+          // We need to manually add the function responses to the history
+          // so the model knows the tools were cancelled.
+          const combinedParts = geminiTools.flatMap(
+            (toolCall) => toolCall.response.responseParts,
+          );
+          geminiClient.addHistory({
+            role: 'user',
+            parts: combinedParts,
+          });
+        }
+
+        const callIdsToMarkAsSubmitted = geminiTools.map(
+          (toolCall) => toolCall.request.callId,
+        );
+        markToolsAsSubmitted(callIdsToMarkAsSubmitted);
+        return;
+      }
+
+      const responsesToSend: Part[] = geminiTools.flatMap(
+        (toolCall) => toolCall.response.responseParts,
+      );
+      const callIdsToMarkAsSubmitted = geminiTools.map(
+        (toolCall) => toolCall.request.callId,
+      );
+
+      const prompt_ids = geminiTools.map(
+        (toolCall) => toolCall.request.prompt_id,
+      );
+
+      markToolsAsSubmitted(callIdsToMarkAsSubmitted);
+
+      // Don't continue if model was switched due to quota error
+      if (modelSwitchedFromQuotaError) {
+        return;
+      }
+
+      submitQuery(
+        responsesToSend,
+        {
+          isContinuation: true,
+        },
+        prompt_ids[0],
+      );
+    },
+    [
+      isResponding,
+      submitQuery,
+      markToolsAsSubmitted,
+      geminiClient,
+      performMemoryRefresh,
+      modelSwitchedFromQuotaError,
+      processedMemoryToolsRef,
+    ],
+  );
 
   const pendingToolCallGroupDisplay = useMemo(
     () =>
@@ -236,6 +425,40 @@ export const useGeminiStream = (
     }
     return StreamingState.Idle;
   }, [isResponding, toolCalls]);
+
+  // Trigger events when streaming state changes
+  useEffect(() => {
+    const currentState = streamingState;
+    const prevState = prevStreamingStateRef.current;
+
+    if (currentState !== prevState) {
+      // Trigger event based on the new state
+      let eventTrigger: EventTrigger | null = null;
+
+      switch (currentState) {
+        case StreamingState.Idle:
+          eventTrigger = 'idle';
+          break;
+        case StreamingState.WaitingForConfirmation:
+          eventTrigger = 'confirm';
+          break;
+        case StreamingState.Responding:
+          eventTrigger = 'responding';
+          break;
+        default:
+          // Handle any unexpected states gracefully
+          eventTrigger = null;
+          break;
+      }
+
+      if (eventTrigger && eventHookServiceRef.current) {
+        eventHookServiceRef.current.triggerEvent(eventTrigger);
+      }
+
+      // Update previous state
+      prevStreamingStateRef.current = currentState;
+    }
+  }, [streamingState]);
 
   useEffect(() => {
     if (
@@ -989,128 +1212,6 @@ export const useGeminiStream = (
       }
     },
     [toolCalls],
-  );
-
-  const handleCompletedTools = useCallback(
-    async (completedToolCallsFromScheduler: TrackedToolCall[]) => {
-      if (isResponding) {
-        return;
-      }
-
-      const completedAndReadyToSubmitTools =
-        completedToolCallsFromScheduler.filter(
-          (
-            tc: TrackedToolCall,
-          ): tc is TrackedCompletedToolCall | TrackedCancelledToolCall => {
-            const isTerminalState =
-              tc.status === 'success' ||
-              tc.status === 'error' ||
-              tc.status === 'cancelled';
-
-            if (isTerminalState) {
-              const completedOrCancelledCall = tc as
-                | TrackedCompletedToolCall
-                | TrackedCancelledToolCall;
-              return (
-                completedOrCancelledCall.response?.responseParts !== undefined
-              );
-            }
-            return false;
-          },
-        );
-
-      // Finalize any client-initiated tools as soon as they are done.
-      const clientTools = completedAndReadyToSubmitTools.filter(
-        (t) => t.request.isClientInitiated,
-      );
-      if (clientTools.length > 0) {
-        markToolsAsSubmitted(clientTools.map((t) => t.request.callId));
-      }
-
-      // Identify new, successful save_memory calls that we haven't processed yet.
-      const newSuccessfulMemorySaves = completedAndReadyToSubmitTools.filter(
-        (t) =>
-          t.request.name === 'save_memory' &&
-          t.status === 'success' &&
-          !processedMemoryToolsRef.current.has(t.request.callId),
-      );
-
-      if (newSuccessfulMemorySaves.length > 0) {
-        // Perform the refresh only if there are new ones.
-        void performMemoryRefresh();
-        // Mark them as processed so we don't do this again on the next render.
-        newSuccessfulMemorySaves.forEach((t) =>
-          processedMemoryToolsRef.current.add(t.request.callId),
-        );
-      }
-
-      const geminiTools = completedAndReadyToSubmitTools.filter(
-        (t) => !t.request.isClientInitiated,
-      );
-
-      if (geminiTools.length === 0) {
-        return;
-      }
-
-      // If all the tools were cancelled, don't submit a response to Gemini.
-      const allToolsCancelled = geminiTools.every(
-        (tc) => tc.status === 'cancelled',
-      );
-
-      if (allToolsCancelled) {
-        if (geminiClient) {
-          // We need to manually add the function responses to the history
-          // so the model knows the tools were cancelled.
-          const combinedParts = geminiTools.flatMap(
-            (toolCall) => toolCall.response.responseParts,
-          );
-          geminiClient.addHistory({
-            role: 'user',
-            parts: combinedParts,
-          });
-        }
-
-        const callIdsToMarkAsSubmitted = geminiTools.map(
-          (toolCall) => toolCall.request.callId,
-        );
-        markToolsAsSubmitted(callIdsToMarkAsSubmitted);
-        return;
-      }
-
-      const responsesToSend: Part[] = geminiTools.flatMap(
-        (toolCall) => toolCall.response.responseParts,
-      );
-      const callIdsToMarkAsSubmitted = geminiTools.map(
-        (toolCall) => toolCall.request.callId,
-      );
-
-      const prompt_ids = geminiTools.map(
-        (toolCall) => toolCall.request.prompt_id,
-      );
-
-      markToolsAsSubmitted(callIdsToMarkAsSubmitted);
-
-      // Don't continue if model was switched due to quota error
-      if (modelSwitchedFromQuotaError) {
-        return;
-      }
-
-      submitQuery(
-        responsesToSend,
-        {
-          isContinuation: true,
-        },
-        prompt_ids[0],
-      );
-    },
-    [
-      isResponding,
-      submitQuery,
-      markToolsAsSubmitted,
-      geminiClient,
-      performMemoryRefresh,
-      modelSwitchedFromQuotaError,
-    ],
   );
 
   const pendingHistoryItems = useMemo(
