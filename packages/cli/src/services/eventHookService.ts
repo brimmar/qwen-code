@@ -6,11 +6,6 @@
 
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import path from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 export type EventTrigger =
   | 'idle'
@@ -93,23 +88,23 @@ export class EventHookService {
         return;
       }
 
-      const process = spawn(command, args, {
+      const childProcess = spawn(command, args, {
         cwd: this.workingDirectory,
         stdio: 'inherit', // This allows the command output to be visible
         env: { ...process.env }, // Inherit current environment
       });
 
       // Add to process set for cleanup
-      hook.processes.add(process);
+      hook.processes.add(childProcess);
 
       // Remove from set when process exits
-      process.on('exit', () => {
-        hook.processes.delete(process);
+      childProcess.on('exit', () => {
+        hook.processes.delete(childProcess);
       });
 
-      process.on('error', (error) => {
+      childProcess.on('error', (error: Error) => {
         console.error(`Event hook process error:`, error);
-        hook.processes.delete(process);
+        hook.processes.delete(childProcess);
       });
     } catch (error) {
       console.error('Failed to spawn event hook process:', error);

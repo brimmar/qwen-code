@@ -215,6 +215,16 @@ export const useGeminiStream = (
     [originalScheduleToolCalls],
   );
 
+  // Ref to hold the submitQuery function so it can be accessed by handleCompletedTools
+  const submitQueryRef =
+    useRef<
+      (
+        query: PartListUnion,
+        options?: { isContinuation: boolean },
+        prompt_id?: string,
+      ) => Promise<void> | null
+    >(null);
+
   // Enhanced handleCompletedTools that triggers afterTool events
   const handleCompletedTools = useCallback(
     async (completedToolCallsFromScheduler: TrackedToolCall[]) => {
@@ -328,17 +338,19 @@ export const useGeminiStream = (
         return;
       }
 
-      submitQuery(
-        responsesToSend,
-        {
-          isContinuation: true,
-        },
-        prompt_ids[0],
-      );
+      // Use the ref to call submitQuery to avoid circular dependency
+      if (submitQueryRef.current) {
+        submitQueryRef.current(
+          responsesToSend,
+          {
+            isContinuation: true,
+          },
+          prompt_ids[0],
+        );
+      }
     },
     [
       isResponding,
-      submitQuery,
       markToolsAsSubmitted,
       geminiClient,
       performMemoryRefresh,
@@ -1174,6 +1186,11 @@ export const useGeminiStream = (
       restoreOriginalModel,
     ],
   );
+
+  // Update the ref to point to the current submitQuery function
+  useEffect(() => {
+    submitQueryRef.current = submitQuery;
+  }, [submitQuery]);
 
   const handleApprovalModeChange = useCallback(
     async (newApprovalMode: ApprovalMode) => {
