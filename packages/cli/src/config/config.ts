@@ -193,8 +193,7 @@ export async function parseArguments(settings: Settings): Promise<CliArgs> {
     })
     .option('proxy', {
       type: 'string',
-      description:
-        'Proxy for Qwen Code, like schema://user:password@host:port',
+      description: 'Proxy for Qwen Code, like schema://user:password@host:port',
     })
     .deprecateOption(
       'proxy',

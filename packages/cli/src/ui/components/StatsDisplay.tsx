@@ -128,12 +128,12 @@ const ModelUsageTable: React.FC<{
           </Box>
           <Box width={inputTokensWidth} justifyContent="flex-end">
             <Text color={theme.status.warning}>
-              {modelMetrics.tokens.prompt.toLocaleString()}
+              {modelMetrics.tokens.prompt.toLocaleString('en-US')}
             </Text>
           </Box>
           <Box width={outputTokensWidth} justifyContent="flex-end">
             <Text color={theme.status.warning}>
-              {modelMetrics.tokens.candidates.toLocaleString()}
+              {modelMetrics.tokens.candidates.toLocaleString('en-US')}
             </Text>
           </Box>
         </Box>
@@ -142,7 +142,8 @@ const ModelUsageTable: React.FC<{
         <Box flexDirection="column" marginTop={1}>
           <Text color={theme.text.primary}>
             <Text color={theme.status.success}>Savings Highlight:</Text>{' '}
-            {totalCachedTokens.toLocaleString()} ({cacheEfficiency.toFixed(1)}
+            {totalCachedTokens.toLocaleString('en-US')} (
+            {cacheEfficiency.toFixed(1)}
             %) of input tokens were served from the cache, reducing costs.
           </Text>
           <Box height={1} />

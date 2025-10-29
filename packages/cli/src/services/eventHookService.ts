@@ -53,8 +53,8 @@ export class EventHookService {
    * Trigger all hooks that match the given event
    */
   triggerEvent(event: EventTrigger): void {
-    // Stop any previous processes for this event type
-    this.stopPreviousProcesses(event);
+    // Stop any previous processes for other event types
+    this.stopOtherProcesses(event);
 
     const matchingHooks = this.hooks.filter((hook) => {
       const on = hook.config.on;
@@ -112,27 +112,27 @@ export class EventHookService {
   }
 
   /**
-   * Stop previous processes for the given event
+   * Stop all processes that are not for the current event
    */
-  private stopPreviousProcesses(event: EventTrigger): void {
-    const matchingHooks = this.hooks.filter((hook) => {
+  private stopOtherProcesses(currentEvent: EventTrigger): void {
+    for (const hook of this.hooks) {
       const on = hook.config.on;
-      return Array.isArray(on) ? on.includes(event) : on === event;
-    });
+      const isHookForCurrentEvent = Array.isArray(on)
+        ? on.includes(currentEvent)
+        : on === currentEvent;
 
-    for (const hook of matchingHooks) {
-      for (const process of hook.processes) {
-        if (process.pid && !process.killed) {
-          try {
-            // Kill the entire process group to prevent orphaned processes
-            process.kill('SIGTERM');
-          } catch (error) {
-            // Process might have already exited
-            console.warn(`Failed to kill process ${process.pid}:`, error);
+      if (!isHookForCurrentEvent) {
+        for (const process of hook.processes) {
+          if (process.pid && !process.killed) {
+            try {
+              process.kill('SIGTERM');
+            } catch (error) {
+              console.warn(`Failed to kill process ${process.pid}:`, error);
+            }
           }
         }
+        hook.processes.clear();
       }
-      hook.processes.clear();
     }
   }
 
